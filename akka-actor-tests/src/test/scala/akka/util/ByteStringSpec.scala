@@ -67,6 +67,17 @@ class ByteStringSpec extends WordSpec with MustMatchers with Checkers {
   val arbitraryDoubleArray: Arbitrary[Array[Double]] = Arbitrary { Gen.sized { n ⇒ Gen.containerOfN[Array, Double](n, arbitrary[Double]) } }
   implicit val arbitraryDoubleArraySlice: Arbitrary[ArraySlice[Double]] = arbSlice(arbitraryDoubleArray)
 
+  type ArrayNumBytes[A] = (Array[A], Int)
+
+  implicit val arbitraryLongArrayNumBytes: Arbitrary[ArrayNumBytes[Long]] = Arbitrary {
+    for {
+      xs ← arbitraryLongArray.arbitrary
+      from ← choose(0, xs.length)
+      until ← choose(from, xs.length)
+      bytes ← choose(0, 8)
+    } yield (xs.slice(from, until), bytes)
+  }
+
   def likeVector(bs: ByteString)(body: IndexedSeq[Byte] ⇒ Any): Boolean = {
     val vec = Vector(bs: _*)
     body(bs) == body(vec)
@@ -208,6 +219,21 @@ class ByteStringSpec extends WordSpec with MustMatchers with Checkers {
     builder.putLongs(data, from, until - from)(byteOrder)
     for (i ← until to data.length - 1) builder.putLong(data(i))(byteOrder)
     reference.toSeq == builder.result
+  }
+
+  def testLongPartEncoding(anb: ArrayNumBytes[Long], byteOrder: ByteOrder): Boolean = {
+    val elemSize = 8
+    val (data, nBytes) = anb
+
+    val reference = Array.ofDim[Byte](data.length * elemSize)
+    ByteBuffer.wrap(reference).order(byteOrder).asLongBuffer.put(data)
+    val builder = ByteString.newBuilder
+    for (i ← 0 to data.length - 1) builder.putLongPart(data(i), nBytes)(byteOrder)
+
+    reference.zipWithIndex.collect({ // Since there is no partial put on LongBuffer, we need to collect only the interesting bytes
+      case (r, i) if byteOrder == ByteOrder.LITTLE_ENDIAN && i % 8 < nBytes     ⇒ r
+      case (r, i) if byteOrder == ByteOrder.BIG_ENDIAN && i % 8 >= (8 - nBytes) ⇒ r
+    }).toSeq == builder.result
   }
 
   def testFloatEncoding(slice: ArraySlice[Float], byteOrder: ByteOrder): Boolean = {
@@ -517,6 +543,8 @@ class ByteStringSpec extends WordSpec with MustMatchers with Checkers {
       "encoding Int in little-endian" in { check { slice: ArraySlice[Int] ⇒ testIntEncoding(slice, LITTLE_ENDIAN) } }
       "encoding Long in big-endian" in { check { slice: ArraySlice[Long] ⇒ testLongEncoding(slice, BIG_ENDIAN) } }
       "encoding Long in little-endian" in { check { slice: ArraySlice[Long] ⇒ testLongEncoding(slice, LITTLE_ENDIAN) } }
+      "encoding LongPart in big-endian" in { check { slice: ArrayNumBytes[Long] ⇒ testLongPartEncoding(slice, BIG_ENDIAN) } }
+      "encoding LongPart in little-endian" in { check { slice: ArrayNumBytes[Long] ⇒ testLongPartEncoding(slice, LITTLE_ENDIAN) } }
       "encoding Float in big-endian" in { check { slice: ArraySlice[Float] ⇒ testFloatEncoding(slice, BIG_ENDIAN) } }
       "encoding Float in little-endian" in { check { slice: ArraySlice[Float] ⇒ testFloatEncoding(slice, LITTLE_ENDIAN) } }
       "encoding Double in big-endian" in { check { slice: ArraySlice[Double] ⇒ testDoubleEncoding(slice, BIG_ENDIAN) } }
